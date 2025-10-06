@@ -1,0 +1,55 @@
+From fd9c9788f73cb088229701dd92443aa04005a4a3 Mon Sep 17 00:00:00 2001
+From: Eskil Abrahamsen Blomfeldt <eskil.abrahamsen-blomfeldt@qt.io>
+Date: Tue, 26 Nov 2024 10:47:30 +0100
+Subject: Don't support subpixel positioning for color fonts
+
+This comes at a price and it does not really make sense for
+emojis.
+
+Pick-to: 6.8
+Change-Id: I57148bff48a48bb81a03203626df25646c9acb6a
+Reviewed-by: Eirik Aavitsland <eirik.aavitsland@qt.io>
+
+diff --git a/src/gui/text/coretext/qfontengine_coretext_p.h b/src/gui/text/coretext/qfontengine_coretext_p.h
+index 1b8a7e0d2a..726abd61d5 100644
+--- a/src/gui/text/coretext/qfontengine_coretext_p.h
++++ b/src/gui/text/coretext/qfontengine_coretext_p.h
+@@ -54,7 +54,7 @@ public:
+     bool canRender(const QChar *string, int len) const override;
+ 
+     int synthesized() const override { return synthesisFlags; }
+-    bool supportsHorizontalSubPixelPositions() const override { return true; }
++    bool supportsHorizontalSubPixelPositions() const override { return !isColorFont(); }
+     bool supportsVerticalSubPixelPositions() const override { return false; }
+ 
+     QFixed lineThickness() const override;
+diff --git a/src/gui/text/freetype/qfontengine_ft_p.h b/src/gui/text/freetype/qfontengine_ft_p.h
+index d2fa82b81d..924131699a 100644
+--- a/src/gui/text/freetype/qfontengine_ft_p.h
++++ b/src/gui/text/freetype/qfontengine_ft_p.h
+@@ -158,8 +158,9 @@ private:
+     QFixed emSquareSize() const override;
+     bool supportsHorizontalSubPixelPositions() const override
+     {
+-        return default_hint_style == HintLight ||
+-               default_hint_style == HintNone;
++        return !isColorFont()
++                && (default_hint_style == HintLight ||
++                    default_hint_style == HintNone);
+     }
+ 
+     bool supportsVerticalSubPixelPositions() const override
+diff --git a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
+index 3ab6fe723d..049a3e5885 100644
+--- a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
++++ b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
+@@ -749,7 +749,8 @@ QImage QWindowsFontEngineDirectWrite::alphaMapForGlyph(glyph_t glyph,
+ bool QWindowsFontEngineDirectWrite::supportsHorizontalSubPixelPositions() const
+ {
+     DWRITE_RENDERING_MODE renderMode = hintingPreferenceToRenderingMode(fontDef);
+-    return  (renderMode != DWRITE_RENDERING_MODE_GDI_CLASSIC
++    return  (!isColorFont()
++            && renderMode != DWRITE_RENDERING_MODE_GDI_CLASSIC
+             && renderMode != DWRITE_RENDERING_MODE_GDI_NATURAL
+             && renderMode != DWRITE_RENDERING_MODE_ALIASED);
+ }
