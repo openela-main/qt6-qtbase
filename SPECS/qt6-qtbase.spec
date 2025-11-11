@@ -46,8 +46,8 @@ BuildRequires: pkgconfig(libsystemd)
 
 Name:    qt6-qtbase
 Summary: Qt6 - QtBase components
-Version: 6.8.1
-Release: 9%{?dist}
+Version: 6.9.1
+Release: 1%{?dist}
 
 License: LGPL-3.0-only OR GPL-3.0-only WITH Qt-GPL-exception-1.0
 Url:     http://qt-project.org/
@@ -97,22 +97,6 @@ Patch56: qtbase-mysql.patch
 Patch58: qtbase-libglvnd.patch
 
 ## upstream patches
-Patch150: qtbase-extract-emoji-data-from-unicode-files.patch
-Patch151: qtbase-introduce-emoji-segmenter-to-3rdparty-code.patch
-Patch152: qtbase-use-emoji-segmenter-to-apply-emoji-fonts-automatically.patch
-Patch153: qtbase-dont-support-subpixel-positioning-for-color-fonts.patch
-Patch154: qtbase-fix-regression-when-looking-up-fallback-fonts.patch
-Patch155: qtbase-skip-ad-hoc-handling-of-variation-selector-in-font-merging.patch
-Patch156: qtbase-fontconfig-dont-register-hardcoded-fonts-as-color-fonts.patch
-Patch157: qtbase-request-actual-font-family-request-in-final-color-font-fail-safe.patch
-Patch158: qtbase-fontconfig-fix-detection-of-color-fonts.patch
-
-
-## CVE fixes
-Patch200: CVE-2025-5455-qtbase-6.8.patch
-
-## RHEL specific patches
-# Patch300: qtbase-fix-tests.patch
 
 # Do not check any files in %%{_qt6_plugindir}/platformthemes/ for requires.
 # Those themes are there for platform integration. If the required libraries are
@@ -138,12 +122,12 @@ BuildRequires: double-conversion-devel
 %else
 Provides:      bundled(double-conversion)
 %endif
-Provides:      bundled(emoji-segmenter)
 %if 0%{?fedora} || 0%{?epel}
 BuildRequires: libb2-devel
 %else
 Provides:      bundled(libb2)
 %endif
+Provides:      bundled(emoji-segmenter)
 BuildRequires: libjpeg-devel
 BuildRequires: libmng-devel
 BuildRequires: libtiff-devel
@@ -383,35 +367,35 @@ export LDFLAGS="$LDFLAGS $RPM_LD_FLAGS"
 export MAKEFLAGS="%{?_smp_mflags}"
 
 %cmake_qt6 \
- -DQT_FEATURE_accessibility=ON \
- -DQT_FEATURE_fontconfig=ON \
- -DQT_FEATURE_glib=ON \
- -DQT_FEATURE_sse2=%{?no_sse2:OFF}%{!?no_sse2:ON} \
- -DQT_FEATURE_icu=ON \
- -DQT_FEATURE_enable_new_dtags=ON \
- -DQT_FEATURE_emojisegmenter=ON \
- -DQT_FEATURE_journald=%{?journald:ON}%{!?journald:OFF} \
- -DQT_FEATURE_openssl_linked=ON \
- -DQT_FEATURE_openssl_hash=ON \
- -DQT_FEATURE_libproxy=ON \
- -DQT_FEATURE_sctp=ON \
- -DQT_FEATURE_separate_debug_info=OFF \
- -DQT_FEATURE_reduce_relocations=OFF \
- -DQT_FEATURE_relocatable=OFF \
- -DQT_FEATURE_system_jpeg=ON \
- -DQT_FEATURE_system_png=ON \
- -DQT_FEATURE_system_zlib=ON \
- %{?ibase:-DQT_FEATURE_sql_ibase=ON} \
- -DQT_FEATURE_sql_odbc=ON \
- -DQT_FEATURE_sql_mysql=ON \
- -DQT_FEATURE_sql_psql=ON \
- -DQT_FEATURE_sql_sqlite=ON \
- -DQT_FEATURE_rpath=OFF \
- -DQT_FEATURE_zstd=ON \
- -DQT_FEATURE_elf_private_full_version=ON \
- %{?dbus_linked:-DQT_FEATURE_dbus_linked=ON} \
- %{?pcre:-DQT_FEATURE_system_pcre2=ON} \
- %{?sqlite:-DQT_FEATURE_system_sqlite=ON} \
+ -DFEATURE_accessibility=ON \
+ -DFEATURE_fontconfig=ON \
+ -DFEATURE_glib=ON \
+ -DFEATURE_sse2=%{?no_sse2:OFF}%{!?no_sse2:ON} \
+ -DFEATURE_icu=ON \
+ -DFEATURE_enable_new_dtags=ON \
+ -DFEATURE_emojisegmenter=ON \
+ -DFEATURE_journald=%{?journald:ON}%{!?journald:OFF} \
+ -DFEATURE_openssl_linked=ON \
+ -DFEATURE_openssl_hash=ON \
+ -DFEATURE_libproxy=ON \
+ -DFEATURE_sctp=ON \
+ -DFEATURE_separate_debug_info=OFF \
+ -DFEATURE_reduce_relocations=OFF \
+ -DFEATURE_relocatable=OFF \
+ -DFEATURE_system_jpeg=ON \
+ -DFEATURE_system_png=ON \
+ -DFEATURE_system_zlib=ON \
+ %{?ibase:-DFEATURE_sql_ibase=ON} \
+ -DFEATURE_sql_odbc=ON \
+ -DFEATURE_sql_mysql=ON \
+ -DFEATURE_sql_psql=ON \
+ -DFEATURE_sql_sqlite=ON \
+ -DFEATURE_rpath=OFF \
+ -DFEATURE_zstd=ON \
+ -DFEATURE_elf_private_full_version=ON \
+ %{?dbus_linked:-DFEATURE_dbus_linked=ON} \
+ %{?pcre:-DFEATURE_system_pcre2=ON} \
+ %{?sqlite:-DFEATURE_system_sqlite=ON} \
  -DBUILD_SHARED_LIBS=ON \
  -DQT_BUILD_EXAMPLES=%{?examples:ON}%{!?examples:OFF} \
  -DQT_INSTALL_EXAMPLES_SOURCES=%{?examples:ON}%{!?examples:OFF} \
@@ -458,7 +442,7 @@ translationdir=%{_qt6_translationdir}
 
 Name: Qt6
 Description: Qt6 Configuration
-Version: 6.8.1
+Version: 6.9.1
 EOF
 
 # rpm macros
@@ -530,6 +514,9 @@ rm -r %{buildroot}%{_qt6_headerdir}/QtExamplesAssetDownloader
 rm %{buildroot}%{_qt6_descriptionsdir}/ExamplesAssetDownloaderPrivate.json
 rm %{buildroot}%{_qt6_libdir}/libQt6ExamplesAssetDownloader.*
 rm %{buildroot}%{_qt6_libdir}/qt6/metatypes/qt6examplesassetdownloaderprivate_*_metatypes.json
+
+# These shouldn't be probably installed
+rm -r %{buildroot}%{_qt6_libdir}/cmake/Qt6/3rdparty/extra-cmake-modules/*.patch
 
 # This is only for Apple platforms and has a python2 dep
 rm -r %{buildroot}%{_qt6_mkspecsdir}/features/uikit
@@ -704,6 +691,7 @@ make check -k ||:
 %{_qt6_libdir}/libQt6Xml.so
 %{_qt6_libdir}/cmake/Qt6/3rdparty/extra-cmake-modules/REUSE.toml
 %{_qt6_libdir}/cmake/Qt6/3rdparty/kwin/REUSE.toml
+%{_qt6_libdir}/cmake/Qt6/*.in
 %{_qt6_libdir}/cmake/Qt6/*.h.in
 %{_qt6_libdir}/cmake/Qt6/*.cmake
 %{_qt6_libdir}/cmake/Qt6/*.cmake.in
@@ -781,10 +769,38 @@ make check -k ||:
 %{_qt6_headerdir}/QtEglFSDeviceIntegration
 %{_qt6_headerdir}/QtEglFsKmsGbmSupport
 %{_qt6_headerdir}/QtEglFsKmsSupport
+%dir %{_qt6_libdir}/cmake/Qt6ConcurrentPrivate
+%dir %{_qt6_libdir}/cmake/Qt6CorePrivate
+%dir %{_qt6_libdir}/cmake/Qt6DBusPrivate
+%dir %{_qt6_libdir}/cmake/Qt6GuiPrivate
+%dir %{_qt6_libdir}/cmake/Qt6NetworkPrivate
+%dir %{_qt6_libdir}/cmake/Qt6OpenGLPrivate
+%dir %{_qt6_libdir}/cmake/Qt6OpenGLWidgetsPrivate
+%dir %{_qt6_libdir}/cmake/Qt6PrintSupportPrivate
+%dir %{_qt6_libdir}/cmake/Qt6SqlPrivate
+%dir %{_qt6_libdir}/cmake/Qt6TestInternalsPrivate
+%dir %{_qt6_libdir}/cmake/Qt6TestInternalsPrivate/3rdparty/cmake
+%dir %{_qt6_libdir}/cmake/Qt6TestPrivate
+%dir %{_qt6_libdir}/cmake/Qt6WidgetsPrivate
+%dir %{_qt6_libdir}/cmake/Qt6XmlPrivate
 %dir %{_qt6_libdir}/cmake/Qt6EglFSDeviceIntegrationPrivate
 %dir %{_qt6_libdir}/cmake/Qt6EglFsKmsGbmSupportPrivate
 %dir %{_qt6_libdir}/cmake/Qt6EglFsKmsSupportPrivate
 %dir %{_qt6_libdir}/cmake/Qt6XcbQpaPrivate
+%{_qt6_libdir}/cmake/Qt6ConcurrentPrivate/*.cmake
+%{_qt6_libdir}/cmake/Qt6CorePrivate/*.cmake
+%{_qt6_libdir}/cmake/Qt6DBusPrivate/*.cmake
+%{_qt6_libdir}/cmake/Qt6GuiPrivate/*.cmake
+%{_qt6_libdir}/cmake/Qt6NetworkPrivate/*.cmake
+%{_qt6_libdir}/cmake/Qt6OpenGLPrivate/*.cmake
+%{_qt6_libdir}/cmake/Qt6OpenGLWidgetsPrivate/*.cmake
+%{_qt6_libdir}/cmake/Qt6PrintSupportPrivate/*.cmake
+%{_qt6_libdir}/cmake/Qt6SqlPrivate/*.cmake
+%{_qt6_libdir}/cmake/Qt6TestInternalsPrivate/*.cmake
+%{_qt6_libdir}/cmake/Qt6TestInternalsPrivate/3rdparty/cmake/*.cmake
+%{_qt6_libdir}/cmake/Qt6TestPrivate/*.cmake
+%{_qt6_libdir}/cmake/Qt6WidgetsPrivate/*.cmake
+%{_qt6_libdir}/cmake/Qt6XmlPrivate/*.cmake
 %{_qt6_libdir}/cmake/Qt6EglFSDeviceIntegrationPrivate/*.cmake
 %{_qt6_libdir}/cmake/Qt6EglFsKmsGbmSupportPrivate/*.cmake
 %{_qt6_libdir}/cmake/Qt6EglFsKmsSupportPrivate/*.cmake
@@ -806,6 +822,7 @@ make check -k ||:
 %{_qt6_metatypesdir}/qt6eglfskmssupportprivate_*_metatypes.json
 %{_qt6_metatypesdir}/qt6xcbqpaprivate_*_metatypes.json
 %{_qt6_headerdir}/*/%{qt_version}/
+%{_qt6_descriptionsdir}/TestInternalsPrivate.json
 
 %files static
 %dir %{_qt6_libdir}/cmake/Qt6ExampleIconsPrivate
@@ -932,9 +949,11 @@ make check -k ||:
 %endif
 
 %changelog
-* Thu Jun 12 2025 Jan Grulich <jgrulich@redhat.com> - 6.8.1-9
-- qt6: QtCore Assertion Failure Denial of Service
-  Resolves: RHEL-96234
+* Wed May 14 2025 Jan Grulich <jgrulich@redhat.com> - 6.9.1-1
+- 6.9.1
+  Resolves: RHEL-78531
+- Fix emoji rendering issue
+  Resolves: RHEL-76300
 
 * Thu Jan 16 2025 Jan Grulich <jgrulich@redhat.com> - 6.8.1-8
 - Backport additional fixes for emoji support
