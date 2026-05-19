@@ -1,0 +1,896 @@
+From 1493a6e8841dcfb8354f841585ac08ed35e9363b Mon Sep 17 00:00:00 2001
+From: Jan Grulich <jgrulich@redhat.com>
+Date: Tue, 15 Jul 2025 13:10:44 +0200
+Subject: [PATCH] QSsl: Add support for the ML-DSA signature algorithm
+
+Introduce support for the post-quantum digital signature algorithm
+ML-DSA, which is selected by NIST for standardization as part of their
+post-quantum cryptography (PQC) project. It's designed to be secure
+against attacks from both classical and future quantum computers and is
+intended to replace traditional digital algorithms like RSA.
+
+The OpenSSL backend now handles the three security levels (ML-DSA-44,
+ML-DSA-65, and ML-DSA-87) when OpenSSL 3.5 or newer is used or when any
+provider (like oqsprovider) with ML-DSA support is configured.
+
+[ChangeLog][QtNetwork][QSsl] Added support for the ML-DSA signature
+algorithm.
+
+Change-Id: I96fa7e2c95d7c431229816aa9a9a14ebcf46ee40
+Reviewed-by: Timur Pocheptsov <timur.pocheptsov@qt.io>
+---
+
+diff --git a/src/network/ssl/qssl.cpp b/src/network/ssl/qssl.cpp
+index 1e1c327..0388815 100644
+--- a/src/network/ssl/qssl.cpp
++++ b/src/network/ssl/qssl.cpp
+@@ -34,6 +34,7 @@
+ 
+     Describes the different key algorithms supported by QSslKey.
+ 
++    \value MlDsa The ML-DSA algorithm.
+     \value Rsa The RSA algorithm.
+     \value Dsa The DSA algorithm.
+     \value Ec  The Elliptic Curve algorithm.
+diff --git a/src/network/ssl/qssl.h b/src/network/ssl/qssl.h
+index b525402..b7b8a4f 100644
+--- a/src/network/ssl/qssl.h
++++ b/src/network/ssl/qssl.h
+@@ -38,6 +38,7 @@
+         Dsa,
+         Ec,
+         Dh,
++        MlDsa
+     };
+     Q_ENUM_NS(KeyAlgorithm)
+ 
+diff --git a/src/network/ssl/qsslkey_p.cpp b/src/network/ssl/qsslkey_p.cpp
+index da23cff..c0d8e0ce 100644
+--- a/src/network/ssl/qsslkey_p.cpp
++++ b/src/network/ssl/qsslkey_p.cpp
+@@ -364,7 +364,8 @@
+           << ", " << (key.algorithm() == QSsl::Opaque ? "OPAQUE" :
+                      (key.algorithm() == QSsl::Rsa ? "RSA" :
+                      (key.algorithm() == QSsl::Dsa ? "DSA" :
+-                     (key.algorithm() == QSsl::Dh ? "DH" : "EC"))))
++                     (key.algorithm() == QSsl::Dh ? "DH" :
++                     (key.algorithm() == QSsl::Ec ? "EC" : "ML-DSA")))))
+           << ", " << key.length()
+           << ')';
+     return debug;
+diff --git a/src/network/ssl/qtlsbackend.cpp b/src/network/ssl/qtlsbackend.cpp
+index a015ef4..7f9c1d9 100644
+--- a/src/network/ssl/qtlsbackend.cpp
++++ b/src/network/ssl/qtlsbackend.cpp
+@@ -1388,7 +1388,7 @@
+         return QByteArrayLiteral("-----BEGIN DSA PRIVATE KEY-----");
+     else if (algorithm() == QSsl::Ec)
+         return QByteArrayLiteral("-----BEGIN EC PRIVATE KEY-----");
+-    else if (algorithm() == QSsl::Dh)
++    else if (algorithm() == QSsl::Dh || algorithm() == QSsl::MlDsa)
+         return QByteArrayLiteral("-----BEGIN PRIVATE KEY-----");
+ 
+     Q_UNREACHABLE_RETURN({});
+@@ -1409,7 +1409,7 @@
+         return QByteArrayLiteral("-----END DSA PRIVATE KEY-----");
+     else if (algorithm() == QSsl::Ec)
+         return QByteArrayLiteral("-----END EC PRIVATE KEY-----");
+-    else if (algorithm() == QSsl::Dh)
++    else if (algorithm() == QSsl::Dh || algorithm() == QSsl::MlDsa)
+         return QByteArrayLiteral("-----END PRIVATE KEY-----");
+ 
+     Q_UNREACHABLE_RETURN({});
+diff --git a/src/plugins/tls/openssl/qsslcontext_openssl.cpp b/src/plugins/tls/openssl/qsslcontext_openssl.cpp
+index 1902416..e7358da 100644
+--- a/src/plugins/tls/openssl/qsslcontext_openssl.cpp
++++ b/src/plugins/tls/openssl/qsslcontext_openssl.cpp
+@@ -312,6 +312,16 @@
+     return errorStr;
+ }
+ 
++void QSslContext::setGenericPrivateKey(QSslContext *sslContext,
++                                       const QSslConfiguration &configuration)
++{
++    auto qtKey = QTlsBackend::backend<QTlsPrivate::TlsKeyOpenSSL>(configuration.d->privateKey);
++    Q_ASSERT(qtKey);
++    sslContext->pkey = qtKey->genericKey;
++    Q_ASSERT(sslContext->pkey);
++    q_EVP_PKEY_up_ref(sslContext->pkey);
++}
++
+ void QSslContext::initSslContext(QSslContext *sslContext, QSslSocket::SslMode mode,
+                                  const QSslConfiguration &configuration,
+                                  bool allowRootCertOnDemandLoading)
+@@ -589,33 +599,45 @@
+             return;
+         }
+ 
+-        if (configuration.d->privateKey.algorithm() == QSsl::Opaque) {
++        const auto algorithm = configuration.d->privateKey.algorithm();
++        bool useOpaqueHandle = false;
++
++        if (algorithm == QSsl::Opaque)
++            useOpaqueHandle = true;
++#if OPENSSL_VERSION_NUMBER < 0x3050000fL
++        // ML-DSA is only supported in OpenSSL 3.5+, therefore treat it as Qssl::Opaque so it still
++        // works and loads correctly.
++        if (algorithm == QSsl::MlDsa)
++            useOpaqueHandle = true;
++#endif
++
++        if (useOpaqueHandle) {
+             sslContext->pkey = reinterpret_cast<EVP_PKEY *>(configuration.d->privateKey.handle());
++#if OPENSSL_VERSION_NUMBER >= 0x3050000fL
++        } else if (algorithm == QSsl::MlDsa) {
++            setGenericPrivateKey(sslContext, configuration);
++#endif
+         } else {
+ #ifdef OPENSSL_NO_DEPRECATED_3_0
+-            auto qtKey = QTlsBackend::backend<QTlsPrivate::TlsKeyOpenSSL>(configuration.d->privateKey);
+-            Q_ASSERT(qtKey);
+-            sslContext->pkey = qtKey->genericKey;
+-            Q_ASSERT(sslContext->pkey);
+-            q_EVP_PKEY_up_ref(sslContext->pkey);
++            setGenericPrivateKey(sslContext, configuration);
+ #else
+             // Load private key
+             sslContext->pkey = q_EVP_PKEY_new();
+             // before we were using EVP_PKEY_assign_R* functions and did not use EVP_PKEY_free.
+             // this lead to a memory leak. Now we use the *_set1_* functions which do not
+             // take ownership of the RSA/DSA key instance because the QSslKey already has ownership.
+-            if (configuration.d->privateKey.algorithm() == QSsl::Rsa)
++            if (algorithm == QSsl::Rsa)
+                 q_EVP_PKEY_set1_RSA(sslContext->pkey, reinterpret_cast<RSA *>(configuration.d->privateKey.handle()));
+-            else if (configuration.d->privateKey.algorithm() == QSsl::Dsa)
++            else if (algorithm == QSsl::Dsa)
+                 q_EVP_PKEY_set1_DSA(sslContext->pkey, reinterpret_cast<DSA *>(configuration.d->privateKey.handle()));
+ #ifndef OPENSSL_NO_EC
+-            else if (configuration.d->privateKey.algorithm() == QSsl::Ec)
++            else if (algorithm == QSsl::Ec)
+                 q_EVP_PKEY_set1_EC_KEY(sslContext->pkey, reinterpret_cast<EC_KEY *>(configuration.d->privateKey.handle()));
+ #endif // OPENSSL_NO_EC
+ #endif // OPENSSL_NO_DEPRECATED_3_0
+         }
+         auto pkey = sslContext->pkey;
+-        if (configuration.d->privateKey.algorithm() == QSsl::Opaque)
++        if (useOpaqueHandle)
+             sslContext->pkey = nullptr; // Don't free the private key, it belongs to QSslKey
+ 
+         if (!q_SSL_CTX_use_PrivateKey(sslContext->ctx, pkey)) {
+diff --git a/src/plugins/tls/openssl/qsslcontext_openssl_p.h b/src/plugins/tls/openssl/qsslcontext_openssl_p.h
+index 6a9d6bf..9c96b78 100644
+--- a/src/plugins/tls/openssl/qsslcontext_openssl_p.h
++++ b/src/plugins/tls/openssl/qsslcontext_openssl_p.h
+@@ -75,6 +75,8 @@
+     static void initSslContext(QSslContext* sslContext, QSslSocket::SslMode mode, const QSslConfiguration &configuration,
+                                bool allowRootCertOnDemandLoading);
+     static void applyBackendConfig(QSslContext *sslContext);
++    static void setGenericPrivateKey(QSslContext *sslContext,
++                                     const QSslConfiguration &configuration);
+ 
+ private:
+     SSL_CTX* ctx;
+diff --git a/src/plugins/tls/openssl/qsslsocket_openssl_symbols.cpp b/src/plugins/tls/openssl/qsslsocket_openssl_symbols.cpp
+index a5e3a3c..003a995 100644
+--- a/src/plugins/tls/openssl/qsslsocket_openssl_symbols.cpp
++++ b/src/plugins/tls/openssl/qsslsocket_openssl_symbols.cpp
+@@ -307,7 +307,9 @@
+ #if defined(OPENSSL_VERSION_MAJOR) && OPENSSL_VERSION_MAJOR >= 3
+ DEFINEFUNC(X509 *, SSL_get1_peer_certificate, SSL *a, a, return nullptr, return)
+ DEFINEFUNC(int, EVP_PKEY_get_bits, const EVP_PKEY *pkey, pkey, return -1, return)
++DEFINEFUNC(int, EVP_PKEY_get_security_bits, const EVP_PKEY *pkey, pkey, return -1, return)
+ DEFINEFUNC(int, EVP_PKEY_get_base_id, const EVP_PKEY *pkey, pkey, return -1, return)
++DEFINEFUNC(const char *, EVP_PKEY_get0_type_name, const EVP_PKEY *pkey, pkey, return nullptr, return)
+ #else
+ DEFINEFUNC(X509 *, SSL_get_peer_certificate, SSL *a, a, return nullptr, return)
+ DEFINEFUNC(int, EVP_PKEY_base_id, EVP_PKEY *a, a, return NID_undef, return)
+@@ -1079,7 +1081,9 @@
+ #if defined(OPENSSL_VERSION_MAJOR) && OPENSSL_VERSION_MAJOR >= 3
+         RESOLVEFUNC(SSL_get1_peer_certificate)
+         RESOLVEFUNC(EVP_PKEY_get_bits)
++        RESOLVEFUNC(EVP_PKEY_get_security_bits)
+         RESOLVEFUNC(EVP_PKEY_get_base_id)
++        RESOLVEFUNC(EVP_PKEY_get0_type_name)
+ #else
+         RESOLVEFUNC(SSL_get_peer_certificate)
+         RESOLVEFUNC(EVP_PKEY_base_id)
+diff --git a/src/plugins/tls/openssl/qsslsocket_openssl_symbols_p.h b/src/plugins/tls/openssl/qsslsocket_openssl_symbols_p.h
+index ab7bd1f..e63794b 100644
+--- a/src/plugins/tls/openssl/qsslsocket_openssl_symbols_p.h
++++ b/src/plugins/tls/openssl/qsslsocket_openssl_symbols_p.h
+@@ -682,8 +682,11 @@
+ X509 *q_SSL_get1_peer_certificate(SSL *a);
+ #define q_SSL_get_peer_certificate q_SSL_get1_peer_certificate
+ int q_EVP_PKEY_get_bits(const EVP_PKEY *pkey);
++int q_EVP_PKEY_get_security_bits(const EVP_PKEY *pkey);
+ int q_EVP_PKEY_get_base_id(const EVP_PKEY *pkey);
+ #define q_EVP_PKEY_base_id q_EVP_PKEY_get_base_id
++const char *q_EVP_PKEY_get0_type_name(const EVP_PKEY *pkey);
++#define q_EVP_PKEY_type_name q_EVP_PKEY_get0_type_name
+ #else
+ X509 *q_SSL_get_peer_certificate(SSL *a);
+ int q_EVP_PKEY_base_id(EVP_PKEY *a);
+diff --git a/src/plugins/tls/openssl/qtlskey_openssl.cpp b/src/plugins/tls/openssl/qtlskey_openssl.cpp
+index f84461f..0dafb85c 100644
+--- a/src/plugins/tls/openssl/qtlskey_openssl.cpp
++++ b/src/plugins/tls/openssl/qtlskey_openssl.cpp
+@@ -31,6 +31,17 @@
+     decodePem(type, algorithm, pem, passPhrase, deepClear);
+ }
+ 
++void TlsKeyOpenSSL::readGenericKey(BIO *bio, void *phrase, QSsl::KeyType keyType)
++{
++    if (keyType == QSsl::PublicKey)
++        genericKey = q_PEM_read_bio_PUBKEY(bio, nullptr, nullptr, phrase);
++    else
++        genericKey = q_PEM_read_bio_PrivateKey(bio, nullptr, nullptr, phrase);
++    keyIsNull = !genericKey;
++    if (keyIsNull)
++        QTlsBackendOpenSSL::logAndClearErrorQueue();
++}
++
+ void TlsKeyOpenSSL::decodePem(KeyType type, KeyAlgorithm algorithm, const QByteArray &pem,
+                               const QByteArray &passPhrase, bool deepClear)
+ {
+@@ -51,13 +62,7 @@
+     void *phrase = const_cast<char *>(passPhrase.data());
+ 
+ #ifdef OPENSSL_NO_DEPRECATED_3_0
+-    if (type == QSsl::PublicKey)
+-        genericKey = q_PEM_read_bio_PUBKEY(bio, nullptr, nullptr, phrase);
+-    else
+-        genericKey = q_PEM_read_bio_PrivateKey(bio, nullptr, nullptr, phrase);
+-    keyIsNull = !genericKey;
+-    if (keyIsNull)
+-        QTlsBackendOpenSSL::logAndClearErrorQueue();
++    readGenericKey(bio, phrase, keyType);
+ #else
+ 
+     if (algorithm == QSsl::Rsa) {
+@@ -89,6 +94,8 @@
+         if (ec && ec == result)
+             keyIsNull = false;
+ #endif // OPENSSL_NO_EC
++    } else if (algorithm == QSsl::MlDsa) {
++        readGenericKey(bio, phrase, keyType);
+     }
+ 
+ #endif // OPENSSL_NO_DEPRECATED_3_0
+@@ -232,6 +239,13 @@
+     if (isNull() || algorithm() == QSsl::Opaque)
+         return -1;
+ 
++#if defined(OPENSSL_VERSION_MAJOR) && OPENSSL_VERSION_MAJOR >= 3
++    if (algorithm() == QSsl::MlDsa) {
++        Q_ASSERT(genericKey);
++        return q_EVP_PKEY_get_security_bits(genericKey);
++    }
++#endif
++
+ #ifndef OPENSSL_NO_DEPRECATED_3_0
+     switch (algorithm()) {
+     case QSsl::Rsa:
+@@ -330,6 +344,15 @@
+                 fail = true;
+         }
+ #endif
++    } else if (algorithm() == QSsl::MlDsa) {
++        if (type() == QSsl::PublicKey) {
++            if (!q_PEM_write_bio_PUBKEY(bio, genericKey))
++                fail = true;
++        } else {
++            if (!q_PEM_write_bio_PrivateKey(bio, genericKey, cipher, (uchar *)passPhrase.data(),
++                                            passPhrase.size(), nullptr, nullptr))
++                fail = true;
++        }
+     } else {
+         fail = true;
+     }
+@@ -372,6 +395,20 @@
+ #define get_key(key, alg) q_EVP_PKEY_up_ref(pkey); genericKey = pkey;
+ #endif
+ 
++#if defined(OPENSSL_VERSION_MAJOR) && OPENSSL_VERSION_MAJOR >= 3
++    // ML-DSA don't have NIDs
++    const QString keyTypeName = q_EVP_PKEY_type_name(pkey);
++    if (keyTypeName.contains(QLatin1String("ML-DSA")) ||
++        keyTypeName.contains(QLatin1String("mldsa"))) {
++        keyAlgorithm = QSsl::MlDsa;
++        keyIsNull = false;
++        keyType = QSsl::PrivateKey;
++        q_EVP_PKEY_up_ref(pkey);
++        genericKey = pkey;
++        return true;
++    }
++#endif
++
+     switch (q_EVP_PKEY_type(q_EVP_PKEY_base_id(pkey))) {
+     case EVP_PKEY_RSA:
+         keyIsNull = false;
+@@ -510,6 +547,11 @@
+     Q_ASSERT(pkey);
+     const int keyType = q_EVP_PKEY_type(q_EVP_PKEY_base_id(pkey));
+ 
++#if defined(OPENSSL_VERSION_MAJOR) && OPENSSL_VERSION_MAJOR >= 3
++    // ML-DSA don't have NIDs
++    const QString keyTypeName = q_EVP_PKEY_type_name(pkey);
++#endif
++
+     if (keyType == EVP_PKEY_RSA) {
+         get_pubkey(rsa, RSA);
+         tlsKey->keyAlgorithm = QSsl::Rsa;
+@@ -526,6 +568,13 @@
+ #endif
+     } else if (keyType == EVP_PKEY_DH) {
+         // DH unsupported (key is null)
++#if defined(OPENSSL_VERSION_MAJOR) && OPENSSL_VERSION_MAJOR >= 3
++    } else if (keyTypeName.contains(QLatin1String("ML-DSA")) ||
++               keyTypeName.contains(QLatin1String("mldsa"))) {
++        tlsKey->genericKey = pkey;
++        tlsKey->keyAlgorithm = QSsl::MlDsa;
++        tlsKey->keyIsNull = false;
++#endif
+     } else {
+         // error? (key is null)
+     }
+diff --git a/src/plugins/tls/openssl/qtlskey_openssl_p.h b/src/plugins/tls/openssl/qtlskey_openssl_p.h
+index cc38b74..1af9c71 100644
+--- a/src/plugins/tls/openssl/qtlskey_openssl_p.h
++++ b/src/plugins/tls/openssl/qtlskey_openssl_p.h
+@@ -92,6 +92,9 @@
+     };
+ 
+     bool fromEVP_PKEY(EVP_PKEY *pkey);
++
++private:
++    void readGenericKey(BIO *bio, void *phrase, QSsl::KeyType keyType);
+ };
+ 
+ } // namespace QTlsPrivate
+diff --git a/src/plugins/tls/shared/qasn1element_p.h b/src/plugins/tls/shared/qasn1element_p.h
+index 35f21b1..13c9370 100644
+--- a/src/plugins/tls/shared/qasn1element_p.h
++++ b/src/plugins/tls/shared/qasn1element_p.h
+@@ -31,6 +31,14 @@
+ #define EC_ENCRYPTION_OID QByteArrayLiteral("1.2.840.10045.2.1")
+ #define DH_ENCRYPTION_OID QByteArrayLiteral(RSADSI_OID "1.3.1")
+ 
++// ML-DSA
++// https://datatracker.ietf.org/doc/html/draft-ietf-lamps-dilithium-certificates
++#define MLDSA_OID "2.16.840.1.101.3.4.3.17."
++
++#define MLDSA_44_ENCRYPTION_OID QByteArrayLiteral(MLDSA_OID "17")
++#define MLDSA_65_ENCRYPTION_OID QByteArrayLiteral(MLDSA_OID "18")
++#define MLDSA_87_ENCRYPTION_OID QByteArrayLiteral(MLDSA_OID "19")
++
+ // These are mostly from the RFC for PKCS#5
+ // PKCS#5: https://tools.ietf.org/html/rfc8018#appendix-B
+ #define PKCS5_OID RSADSI_OID "1.5."
+diff --git a/src/plugins/tls/shared/qtlskey_generic.cpp b/src/plugins/tls/shared/qtlskey_generic.cpp
+index 571ae52..e31ab0a 100644
+--- a/src/plugins/tls/shared/qtlskey_generic.cpp
++++ b/src/plugins/tls/shared/qtlskey_generic.cpp
+@@ -435,7 +435,7 @@
+         case QSsl::Dsa: return "DSA";
+         case QSsl::Dh: return "DH";
+         case QSsl::Ec: return "EC";
+-        case QSsl::Opaque: return "Opaque";
++        default: return "Opaque";
+         }
+         Q_UNREACHABLE();
+     };
+diff --git a/tests/auto/network/ssl/qsslkey/keys/genkeys.sh b/tests/auto/network/ssl/qsslkey/keys/genkeys.sh
+index afa4b7f..0dc2f13 100755
+--- a/tests/auto/network/ssl/qsslkey/keys/genkeys.sh
++++ b/tests/auto/network/ssl/qsslkey/keys/genkeys.sh
+@@ -138,3 +138,27 @@
+     done
+   done
+ done
++
++#--- ML-DSA ------------------------------------------------------------------------
++for type in mldsa44 mldsa65 mldsa87
++do
++  # From https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.204.pdf
++  # Sizes are in bits, using public key size for all filenames.
++  case $type in
++    mldsa44) pub_size=128;;
++    mldsa65) pub_size=192;;
++    mldsa87) pub_size=256;;
++  esac
++
++  echo -e "\ngenerating ML-DSA private key ($type) to PEM file ..."
++  openssl genpkey -algorithm $type -out $type-pri-$pub_size.pem
++
++  echo -e "\ngenerating ML-DSA private key ($type) to DER file ..."
++  openssl pkey -in $type-pri-$pub_size.pem -outform DER -out $type-pri-$pub_size.der
++
++  echo -e "\ngenerating ML-DSA public key ($type) to PEM file ..."
++  openssl pkey -in $type-pri-$pub_size.pem -pubout -out $type-pub-$pub_size.pem
++
++  echo -e "\ngenerating ML-DSA public key ($type) to DER file ..."
++  openssl pkey -in $type-pri-$pub_size.pem -pubout -outform DER -out $type-pub-$pub_size.der
++done
+diff --git a/tests/auto/network/ssl/qsslkey/keys/mldsa44-pri-128.der b/tests/auto/network/ssl/qsslkey/keys/mldsa44-pri-128.der
+new file mode 100644
+index 0000000..418dc9a
+--- /dev/null
++++ b/tests/auto/network/ssl/qsslkey/keys/mldsa44-pri-128.der
+Binary files differ
+diff --git a/tests/auto/network/ssl/qsslkey/keys/mldsa44-pri-128.pem b/tests/auto/network/ssl/qsslkey/keys/mldsa44-pri-128.pem
+new file mode 100644
+index 0000000..f782fbb
+--- /dev/null
++++ b/tests/auto/network/ssl/qsslkey/keys/mldsa44-pri-128.pem
+@@ -0,0 +1,57 @@
++-----BEGIN PRIVATE KEY-----
++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
++-----END PRIVATE KEY-----
+diff --git a/tests/auto/network/ssl/qsslkey/keys/mldsa44-pub-128.der b/tests/auto/network/ssl/qsslkey/keys/mldsa44-pub-128.der
+new file mode 100644
+index 0000000..25e2aa1
+--- /dev/null
++++ b/tests/auto/network/ssl/qsslkey/keys/mldsa44-pub-128.der
+Binary files differ
+diff --git a/tests/auto/network/ssl/qsslkey/keys/mldsa44-pub-128.pem b/tests/auto/network/ssl/qsslkey/keys/mldsa44-pub-128.pem
+new file mode 100644
+index 0000000..e87c3f0
+--- /dev/null
++++ b/tests/auto/network/ssl/qsslkey/keys/mldsa44-pub-128.pem
+@@ -0,0 +1,30 @@
++-----BEGIN PUBLIC KEY-----
++MIIFMjALBglghkgBZQMEAxEDggUhAO3lkjFddgXxNiQ/KADQ1hkZjXd+nABUfgUX
++cTQRkrnx4xMm6XLwu6h77pusn2h+/3AVj4nB6u24eh31OvOo8UQYBbHpoYQ1ef+5
++0+op0ekCHXKtSwoF5e/8LxTM/YjDysfu4DNqm8OhwClFje2TM3010jpEV5bLOv3f
++hGQU1phF+EPtD9/NxJJclUt350u/33zyqeRPgZ375BmieqVbZeBmxkPTcFKwzync
++NZQtgAYdS2XRp0cGcdXD3sUf3OU1Z6JIJ9gI9KacgmhaTlx7MTSjH8IbnHzmmNgC
++xXYErPd3Jz6Gyu8m12SL2P0NiHsYdKqCUe0Hyj33ougGKKe+74viJYb1K2JqDhZ/
++JJiL68wQTbO41NQ8cFH+JhFsff6r0zbJWRpgNhSv+y4gqCdlMvXZncKe/gwjNvUm
++WYc3AaZCKyKB7pLt6VIYeI1rF81n2EjOZxN0A+zn9e9F7ZbOuPo7YaZJ0qSFuhwI
++ENkG7JXblOeG91FwVGjRJFJphmCDCSLER0UP62JUTwiJL5gbLcupwBpiIyJvR1Xj
++rWbqeD0JMBoAOtgTm5W/NfVm23aP1mvAGb2WZXWHxsb3cX/Jgz4ztV5KiMfXmWFF
++NQkfM0NSPWTLjtFUTxXx4+r+Qgju/vmebpbaMhPIs/We6HBcmGwBux7CZ21/VLPA
++bKQ3BDbITjOsvowEEUaNOjwZA8jZ60lSLCn2TW9wN5PTpSBUTGINY2KP1Oylxz2Q
++h+2U5XQHfZ1g+T9ZqzafuBK4v++nLw/m/JsUAm4wYLEb8E//P3orVvguNPMRwcau
++IyqruP1o19lSWI11+sCvnYMs/dOl8hwTXfkaAIwjy+DVdpCC0Ku3fF3sdZc+fF4b
++rPs8UfKOOmMs8zebGwuTnX7P739RDAAjPPRb19t9DfpjhFt1KceQfzv6d7raCjQX
++TcJDUsByo+Hu9Jb7pIb63ohOIDDIc0buCct8B+YavtvvzgNCP13yevlcQx7jcZim
++x0N9nJZqbMc0BP3Tfdle4GBMcehNhpmGorooZKylbJneQypgdUb0lyFB031DyA6i
++gKLn8jWTpFvR4E4owbqc+dVx2TZU9G8UTz7sOSjFF0O8G70CKSv2A6hqbcv6qEWg
++YeOj2pYDuHT9M2NC89dYVgy2lkibLA3cS97npSn/LUQmHV0Q8SGHr7bAK/6FtGs0
++w4gzTOikLH8bhBDPSCe2HXrDCYhxnl4TmgUlVhXdCphVsEbHGMJ2c6CDs1lI/6if
++GRKYrQvgAcOwhUiASRl5mc0Mz8Ii19o7NIEpWRKOhn0s1mYk4P7+nYW/LthF38Gg
++aFK3aQWNzPzTgnynXagwiqMnaDZC5AbDVkcsd4Ma1YF+MhO12LhlLQ7Q7C1df7Cd
++LyvPrjlUumO3nx0gpFTldpuRjqw54WzNNLfd868ZLIWcrU2BKK4S9dHbXXekiQjN
++Lv5ncyHJ/GaYUcWSC9rZevl8qtgueO87WuDZJcc8MoPirjphfXFntpRy53UcuCK6
++T2oo2gYv+pAB3U64ZC5X1T3OW/HQta2uRbBHWoxwstc+YcG9MKcxGB0FMih6SuCE
++X63l+0y9amxj3l4xAQs4F09lSx2ldeWaI20jGN1f3ItMZbB764GouzMO2xI1aSGB
+++9s0OpCzsmmpCZoezTHhP8re3lAgbC87wVkdxqkMEAsY8YCopsuzDz0BafSpDZTd
++aQ/7wZ1Ys6nfU+ptAVf189suLcl3DhkEdrlzqh5KmZF+eDLltdc=
++-----END PUBLIC KEY-----
+diff --git a/tests/auto/network/ssl/qsslkey/keys/mldsa65-pri-192.der b/tests/auto/network/ssl/qsslkey/keys/mldsa65-pri-192.der
+new file mode 100644
+index 0000000..395e92d
+--- /dev/null
++++ b/tests/auto/network/ssl/qsslkey/keys/mldsa65-pri-192.der
+Binary files differ
+diff --git a/tests/auto/network/ssl/qsslkey/keys/mldsa65-pri-192.pem b/tests/auto/network/ssl/qsslkey/keys/mldsa65-pri-192.pem
+new file mode 100644
+index 0000000..5d2f28b
+--- /dev/null
++++ b/tests/auto/network/ssl/qsslkey/keys/mldsa65-pri-192.pem
+@@ -0,0 +1,88 @@
++-----BEGIN PRIVATE KEY-----
++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
++hYK2S04ErWLFzqV3m9CZmPNm
++-----END PRIVATE KEY-----
+diff --git a/tests/auto/network/ssl/qsslkey/keys/mldsa65-pub-192.der b/tests/auto/network/ssl/qsslkey/keys/mldsa65-pub-192.der
+new file mode 100644
+index 0000000..b79f7e1
+--- /dev/null
++++ b/tests/auto/network/ssl/qsslkey/keys/mldsa65-pub-192.der
+Binary files differ
+diff --git a/tests/auto/network/ssl/qsslkey/keys/mldsa65-pub-192.pem b/tests/auto/network/ssl/qsslkey/keys/mldsa65-pub-192.pem
+new file mode 100644
+index 0000000..54e29f1
+--- /dev/null
++++ b/tests/auto/network/ssl/qsslkey/keys/mldsa65-pub-192.pem
+@@ -0,0 +1,44 @@
++-----BEGIN PUBLIC KEY-----
++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
++k4gAHokJ
++-----END PUBLIC KEY-----
+diff --git a/tests/auto/network/ssl/qsslkey/keys/mldsa87-pri-256.der b/tests/auto/network/ssl/qsslkey/keys/mldsa87-pri-256.der
+new file mode 100644
+index 0000000..8e868cd
+--- /dev/null
++++ b/tests/auto/network/ssl/qsslkey/keys/mldsa87-pri-256.der
+Binary files differ
+diff --git a/tests/auto/network/ssl/qsslkey/keys/mldsa87-pri-256.pem b/tests/auto/network/ssl/qsslkey/keys/mldsa87-pri-256.pem
+new file mode 100644
+index 0000000..92861de
+--- /dev/null
++++ b/tests/auto/network/ssl/qsslkey/keys/mldsa87-pri-256.pem
+@@ -0,0 +1,106 @@
++-----BEGIN PRIVATE KEY-----
++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
++jHiqu/EMBlgTN4tMi7eBbmtd
++-----END PRIVATE KEY-----
+diff --git a/tests/auto/network/ssl/qsslkey/keys/mldsa87-pub-256.der b/tests/auto/network/ssl/qsslkey/keys/mldsa87-pub-256.der
+new file mode 100644
+index 0000000..ecffc90
+--- /dev/null
++++ b/tests/auto/network/ssl/qsslkey/keys/mldsa87-pub-256.der
+Binary files differ
+diff --git a/tests/auto/network/ssl/qsslkey/keys/mldsa87-pub-256.pem b/tests/auto/network/ssl/qsslkey/keys/mldsa87-pub-256.pem
+new file mode 100644
+index 0000000..808690f
+--- /dev/null
++++ b/tests/auto/network/ssl/qsslkey/keys/mldsa87-pub-256.pem
+@@ -0,0 +1,57 @@
++-----BEGIN PUBLIC KEY-----
++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
++F7OXa+xRVnct3UzDCxL0CzValewANg==
++-----END PUBLIC KEY-----
+diff --git a/tests/auto/network/ssl/qsslkey/tst_qsslkey.cpp b/tests/auto/network/ssl/qsslkey/tst_qsslkey.cpp
+index 79bae3c..a47966a 100644
+--- a/tests/auto/network/ssl/qsslkey/tst_qsslkey.cpp
++++ b/tests/auto/network/ssl/qsslkey/tst_qsslkey.cpp
+@@ -197,7 +197,13 @@
+ 
+     QDir dir(testDataDir + "keys");
+     const QFileInfoList fileInfoList = dir.entryInfoList(QDir::Files | QDir::Readable);
+-    QRegularExpression rx(QLatin1String("^(rsa|dsa|dh|ec)-(pub|pri)-(\\d+)-?[\\w-]*\\.(pem|der)$"));
++#if OPENSSL_VERSION_NUMBER >= 0x3050000fL
++    QRegularExpression rx(QLatin1String(
++            "^(rsa|dsa|dh|ec|mldsa44|mldsa65|mldsa87)-(pub|pri)-(\\d+)-?[\\w-]*\\.(pem|der)$"));
++#else
++    QRegularExpression rx(QLatin1String(
++            "^(rsa|dsa|dh|ec)-(pub|pri)-(\\d+)-?[\\w-]*\\.(pem|der)$"));
++#endif
+     for (const QFileInfo &fileInfo : fileInfoList) {
+         if (fileContainsUnsupportedEllipticCurve(fileInfo.fileName()))
+             continue;
+@@ -207,7 +213,8 @@
+                 fileInfo,
+                 match.captured(1) == QLatin1String("rsa") ? QSsl::Rsa :
+                 match.captured(1) == QLatin1String("dsa") ? QSsl::Dsa :
+-                match.captured(1) == QLatin1String("dh") ? QSsl::Dh : QSsl::Ec,
++                match.captured(1) == QLatin1String("dh") ? QSsl::Dh :
++                match.captured(1) == QLatin1String("ec") ? QSsl::Ec : QSsl::MlDsa,
+                 match.captured(2) == QLatin1String("pub") ? QSsl::PublicKey : QSsl::PrivateKey,
+                 match.captured(3).toInt(),
+                 match.captured(4) == QLatin1String("pem") ? QSsl::Pem : QSsl::Der);
